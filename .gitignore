@@ -1,0 +1,12 @@
+DeepSeekHarnessTray.exe
+DeepSeekHarnessTray.bootstrap.exe
+DeepSeekHarness.ico
+*.log
+install.log
+dsh-web.url
+release-v*/
+dsh-windows-tray-launcher-*.zip
+.vs/
+bin/
+obj/
+
