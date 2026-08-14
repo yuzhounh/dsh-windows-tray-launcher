@@ -54,7 +54,7 @@ Double-click the **DeepSeek Harness** desktop shortcut whenever you need DSH.
 
 - If the launcher is not running, it starts DSH and opens the browser after DSH reports that it is ready.
 - If the launcher is already running, another launch opens the current DSH page without starting a second process.
-- Double-clicking the tray icon also opens DSH.
+- Clicking the tray icon opens DSH. Right-click for **Restart DSH** and **Exit**.
 - **Restart DSH** stops and starts only the managed DSH process tree.
 - **Exit** closes the managed DSH process tree and the tray launcher.
 
