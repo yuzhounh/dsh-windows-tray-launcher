@@ -19,8 +19,8 @@ using System.Windows.Forms;
 [assembly: AssemblyTitle("DeepSeek Harness Tray")]
 [assembly: AssemblyProduct("DeepSeek Harness Tray")]
 [assembly: AssemblyDescription("Local Windows tray launcher for DeepSeek Harness")]
-[assembly: AssemblyVersion("1.5.0.0")]
-[assembly: AssemblyFileVersion("1.5.0.0")]
+[assembly: AssemblyVersion("1.6.0.0")]
+[assembly: AssemblyFileVersion("1.6.0.0")]
 
 internal static class Program
 {
@@ -269,12 +269,6 @@ internal sealed class TrayApplicationContext : ApplicationContext
     // NotifyIcon.Text rejects anything longer than this.
     private const int MaxTooltipLength = 63;
 
-    // csc reads source files in the machine's ANSI code page, so non-ASCII characters are
-    // written as escapes to keep the build byte-identical on any locale.
-    private const string StartingStatus = "Starting\u2026";
-    private const string RunningStatus = "Running";
-    private const string StoppedStatus = "Stopped";
-
     private static readonly Regex AnsiPattern = new Regex(
         @"\x1b\[[0-9;?]*[A-Za-z]", RegexOptions.Compiled);
     private static readonly Regex AnnouncedUrlPattern = new Regex(
@@ -290,7 +284,6 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private readonly SynchronizationContext ui;
     private readonly NotifyIcon tray;
     private readonly ModernContextMenuStrip menu;
-    private readonly ToolStripLabel statusItem;
     private readonly ToolStripMenuItem openItem;
     private readonly ToolStripMenuItem restartItem;
 
@@ -318,12 +311,10 @@ internal sealed class TrayApplicationContext : ApplicationContext
             ShowCheckMargin = false,
             ShowImageMargin = false
         };
-        statusItem = CreateStatusItem(menu.Font);
         openItem = CreateMenuItem("Open DSH", menu.Font, delegate { OpenDsh(); });
         openItem.Enabled = false;
         restartItem = CreateMenuItem("Restart DSH", menu.Font, delegate { RestartDsh(); });
         var exitItem = CreateMenuItem("Exit", menu.Font, delegate { ExitLauncher(); });
-        menu.Items.Add(statusItem);
         menu.Items.Add(openItem);
         menu.Items.Add(restartItem);
         menu.Items.Add(new ToolStripSeparator
@@ -345,25 +336,6 @@ internal sealed class TrayApplicationContext : ApplicationContext
         };
         tray.DoubleClick += delegate { OpenDsh(); };
         StartDsh();
-    }
-
-    /// <summary>
-    /// Non-interactive header that explains the current state, so a greyed out
-    /// "Open DSH" is self-explanatory. A ToolStripLabel cannot be selected, which keeps
-    /// it from highlighting or taking keyboard focus like a real command would.
-    /// </summary>
-    private static ToolStripLabel CreateStatusItem(Font menuFont)
-    {
-        int inset = TextRenderer.MeasureText("MM", menuFont).Width;
-        return new ToolStripLabel(StartingStatus)
-        {
-            AutoSize = true,
-            Font = new Font("Segoe UI", 9f, FontStyle.Regular, GraphicsUnit.Point),
-            ForeColor = Color.FromArgb(110, 118, 129),
-            Margin = new Padding(0, 0, 0, 0),
-            Padding = new Padding(inset, 12, inset, 6),
-            TextAlign = ContentAlignment.MiddleLeft
-        };
     }
 
     private static ToolStripMenuItem CreateMenuItem(string text, Font font, EventHandler handler)
@@ -406,7 +378,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
         if (!EnsurePortIsFree())
         {
-            SetStatus("Port " + DefaultPort + " in use");
+            SetTrayText(Program.ProductName + " - Port " + DefaultPort + " in use");
             return;
         }
 
@@ -443,14 +415,14 @@ internal sealed class TrayApplicationContext : ApplicationContext
                 AppendTrayNote("job object unavailable; falling back to taskkill for shutdown");
             process.BeginOutputReadLine();
             process.BeginErrorReadLine();
-            SetStatus(StartingStatus);
+            SetTrayText(Program.ProductName + " - Starting...");
             StartProbe();
         }
         catch (Exception ex)
         {
             dsh = null;
             DisposeJob();
-            SetStatus("Start failed");
+            SetTrayText(Program.ProductName + " - Start failed");
             MessageBox.Show(
                 "DSH could not be started. Make sure Node.js/npm is installed and npx is available.\r\n\r\n" + ex.Message,
                 Program.ProductName, MessageBoxButtons.OK, MessageBoxIcon.Error);
@@ -575,20 +547,12 @@ internal sealed class TrayApplicationContext : ApplicationContext
         try { File.WriteAllText(urlState, url, new UTF8Encoding(false)); } catch { }
         StopProbe();
         openItem.Enabled = true;
-        SetStatus(DescribeRunning(url));
+        SetTrayText(Program.ProductName + " - Running");
         OpenDsh();
     }
 
-    private static string DescribeRunning(string address)
+    private void SetTrayText(string tooltip)
     {
-        try { return RunningStatus + " \u00b7 " + new Uri(address).Authority; }
-        catch { return RunningStatus; }
-    }
-
-    private void SetStatus(string status)
-    {
-        statusItem.Text = status;
-        string tooltip = Program.ProductName + " - " + status;
         tray.Text = tooltip.Length > MaxTooltipLength
             ? tooltip.Substring(0, MaxTooltipLength - 3) + "..."
             : tooltip;
@@ -605,7 +569,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         openItem.Enabled = false;
         StopProbe();
         DeleteUrlState();
-        SetStatus(StoppedStatus);
+        SetTrayText(Program.ProductName + " - Stopped");
         if (!exiting)
         {
             tray.BalloonTipTitle = Program.ProductName + " stopped";
@@ -1458,12 +1422,9 @@ internal sealed class ModernMenuRenderer : ToolStripProfessionalRenderer
     protected override void OnRenderItemText(ToolStripItemTextRenderEventArgs e)
     {
         e.Graphics.TextRenderingHint = TextRenderingHint.ClearTypeGridFit;
-        if (e.Item is ToolStripLabel)
-            e.TextColor = e.Item.ForeColor;
-        else
-            e.TextColor = e.Item.Enabled
-                ? Color.FromArgb(31, 35, 40)
-                : Color.FromArgb(156, 163, 175);
+        e.TextColor = e.Item.Enabled
+            ? Color.FromArgb(31, 35, 40)
+            : Color.FromArgb(156, 163, 175);
 
         var textRect = e.TextRectangle;
         textRect.Y = 0;

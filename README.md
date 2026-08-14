@@ -16,7 +16,6 @@ It starts the official `npx --yes @deepseek-ai/dsh web` command in the backgroun
 - Extracts the actual URL from `dsh web: <URL>` output instead of assuming port `3080`, and falls back to probing the default port if DSH ever changes that message.
 - Opens the DSH Web UI automatically after it is ready.
 - Modern rounded tray menu with **Open DSH**, **Restart DSH**, and **Exit**. On Windows 11 the popup uses DWM rounding and the large system window shadow, the same chrome Electron apps get, instead of the small hard WinForms popup shadow.
-- The menu opens with a non-interactive status line—`Starting…`, `Running · 127.0.0.1:3080`, `Stopped`, or the reason a start failed—so a greyed out **Open DSH** explains itself. The same text is on the tray tooltip.
 - Installing and uninstalling report through a proper application window rather than a console prompt or a stock message box, and the console closes as soon as the build finishes.
 - Single-instance protection. Starting the shortcut again opens the current DSH URL without launching a duplicate.
 - Stops the whole DSH process tree reliably. The tree is held in a Windows job object, so Windows terminates DSH even if the launcher is force-killed, crashes, or the session ends.
