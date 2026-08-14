@@ -19,8 +19,8 @@ using System.Windows.Forms;
 [assembly: AssemblyTitle("DeepSeek Harness Tray")]
 [assembly: AssemblyProduct("DeepSeek Harness Tray")]
 [assembly: AssemblyDescription("Local Windows tray launcher for DeepSeek Harness")]
-[assembly: AssemblyVersion("1.6.1.0")]
-[assembly: AssemblyFileVersion("1.6.1.0")]
+[assembly: AssemblyVersion("1.6.2.0")]
+[assembly: AssemblyFileVersion("1.6.2.0")]
 
 internal static class Program
 {

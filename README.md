@@ -1,6 +1,6 @@
 ﻿# DSH Windows Tray Launcher
 
-[简体中文](README.zh-CN.md)
+**English** | [中文](README.zh-CN.md)
 
 An unofficial Windows system tray launcher for [DeepSeek Harness (`dsh`)](https://github.com/deepseek-ai/deepseek-harness).
 

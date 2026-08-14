@@ -1,6 +1,6 @@
 # DSH Windows 托盘启动器
 
-[English](README.md)
+[English](README.md) | **中文**
 
 这是一个适用于 [DeepSeek Harness（`dsh`）](https://github.com/deepseek-ai/deepseek-harness)的非官方 Windows 系统托盘启动器。
 
