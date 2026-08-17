@@ -4,7 +4,7 @@
 
 An unofficial Windows system tray launcher for [DeepSeek Harness (`dsh`)](https://github.com/deepseek-ai/deepseek-harness).
 
-It starts the official `npx --yes @deepseek-ai/dsh web` command in the background, waits for DSH to report its actual Web UI URL, opens that URL in the default browser, and keeps a small management menu in the Windows notification area.
+It starts the official `npx --yes @deepseek-ai/dsh web` command in the background, waits for DSH to report its actual Web UI URL, opens that URL in the installed browser PWA when available, and keeps a small management menu in the Windows notification area.
 
 > Unofficial community project. Not affiliated with or endorsed by DeepSeek AI.
 
@@ -14,7 +14,7 @@ It starts the official `npx --yes @deepseek-ai/dsh web` command in the backgroun
 - Direct EXE shortcut—no PowerShell, `ExecutionPolicy Bypass`, or hidden script command in the shortcut.
 - Runs `npx --yes @deepseek-ai/dsh web`, so an npm installation prompt cannot block the hidden process.
 - Extracts the actual URL from `dsh web: <URL>` output instead of assuming port `3080`, and falls back to probing the default port if DSH ever changes that message.
-- Opens the DSH Web UI automatically after it is ready.
+- Opens the DSH Web UI automatically after it is ready, preferring an installed Chrome or Edge PWA over a normal browser tab.
 - Modern rounded tray menu with **Open DSH**, **Restart DSH**, and **Exit**. On Windows 11 the popup uses DWM rounding and the large system window shadow, the same chrome Electron apps get, instead of the small hard WinForms popup shadow.
 - Installing and uninstalling report through a proper application window rather than a console prompt or a stock message box, and the console closes as soon as the build finishes.
 - Single-instance protection. Starting the shortcut again opens the current DSH URL without launching a duplicate.

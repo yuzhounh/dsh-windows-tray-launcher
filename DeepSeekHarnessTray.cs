@@ -19,8 +19,8 @@ using System.Windows.Forms;
 [assembly: AssemblyTitle("DeepSeek Harness Tray")]
 [assembly: AssemblyProduct("DeepSeek Harness Tray")]
 [assembly: AssemblyDescription("Local Windows tray launcher for DeepSeek Harness")]
-[assembly: AssemblyVersion("1.6.4.0")]
-[assembly: AssemblyFileVersion("1.6.4.0")]
+[assembly: AssemblyVersion("1.7.0.0")]
+[assembly: AssemblyFileVersion("1.7.0.0")]
 
 internal static class Program
 {
@@ -107,7 +107,8 @@ internal static class Program
             if (!File.Exists(path)) return;
             Uri uri;
             if (Uri.TryCreate(File.ReadAllText(path).Trim(), UriKind.Absolute, out uri) &&
-                (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps))
+                (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps) &&
+                !BrowserAppLauncher.TryOpen(uri.AbsoluteUri))
                 Process.Start(new ProcessStartInfo(uri.AbsoluteUri) { UseShellExecute = true });
         }
         catch { }
@@ -253,6 +254,267 @@ internal static class Program
             System.Runtime.InteropServices.Marshal.ReleaseComObject(shortcut);
         if (shell != null && System.Runtime.InteropServices.Marshal.IsComObject(shell))
             System.Runtime.InteropServices.Marshal.ReleaseComObject(shell);
+    }
+}
+
+/// <summary>
+/// Opens DSH in an installed browser PWA when one is available, otherwise in a
+/// standalone --app window, before falling back to a normal browser tab.
+/// </summary>
+internal static class BrowserAppLauncher
+{
+    private static readonly string[] StartMenuRoots =
+    {
+        Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+            @"Microsoft\Windows\Start Menu\Programs"),
+        Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            @"Microsoft\Windows\Start Menu\Programs")
+    };
+
+    private sealed class PwaCandidate
+    {
+        internal string ProxyPath;
+        internal string Arguments;
+        internal int Score;
+    }
+
+    internal static bool TryOpen(string url)
+    {
+        if (string.IsNullOrWhiteSpace(url)) return false;
+
+        PwaCandidate installed = FindInstalledPwa(url);
+        if (installed != null && TryStart(installed.ProxyPath, AppendLaunchUrl(installed.Arguments, url)))
+            return true;
+
+        string browser = FindBrowserExecutable();
+        if (browser != null && TryStart(browser, "--app=" + Quote(url)))
+            return true;
+
+        return false;
+    }
+
+    private static PwaCandidate FindInstalledPwa(string url)
+    {
+        PwaCandidate best = null;
+        foreach (string root in StartMenuRoots)
+            ConsiderStartMenu(root, url, ref best);
+        ConsiderChromeProfiles(url, ref best);
+        return best;
+    }
+
+    private static void ConsiderStartMenu(string root, string url, ref PwaCandidate best)
+    {
+        if (!Directory.Exists(root)) return;
+        try
+        {
+            foreach (string shortcutPath in Directory.GetFiles(root, "*.lnk", SearchOption.AllDirectories))
+            {
+                string name;
+                string target;
+                string arguments;
+                if (!TryReadShortcut(shortcutPath, out name, out target, out arguments)) continue;
+                if (!IsBrowserProxy(target)) continue;
+                if (arguments.IndexOf("--app-id=", StringComparison.OrdinalIgnoreCase) < 0) continue;
+
+                int score = ScoreCandidate(name, url);
+                if (score <= 0) continue;
+                ConsiderCandidate(ref best, target, arguments, score);
+            }
+        }
+        catch { }
+    }
+
+    private static void ConsiderChromeProfiles(string url, ref PwaCandidate best)
+    {
+        string proxy = FindChromeProxy();
+        if (proxy == null) return;
+
+        string userData = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            @"Google\Chrome\User Data");
+        if (!Directory.Exists(userData)) return;
+
+        try
+        {
+            foreach (string profileDir in Directory.GetDirectories(userData))
+            {
+                string profileName = Path.GetFileName(profileDir);
+                if (!IsBrowserProfileName(profileName)) continue;
+
+                string webApps = Path.Combine(profileDir, "Web Applications");
+                if (!Directory.Exists(webApps)) continue;
+
+                foreach (string appDir in Directory.GetDirectories(webApps, "_crx_*"))
+                {
+                    string appId = Path.GetFileName(appDir).Substring("_crx_".Length);
+                    string displayName = ReadWebAppName(appDir);
+                    int score = ScoreCandidate(displayName, url);
+                    if (score <= 0) continue;
+
+                    string arguments = "--profile-directory=" + profileName + " --app-id=" + appId;
+                    ConsiderCandidate(ref best, proxy, arguments, score - 5);
+                }
+            }
+        }
+        catch { }
+    }
+
+    private static void ConsiderCandidate(ref PwaCandidate best, string proxyPath, string arguments, int score)
+    {
+        if (best != null && score <= best.Score) return;
+        best = new PwaCandidate
+        {
+            ProxyPath = proxyPath,
+            Arguments = arguments,
+            Score = score
+        };
+    }
+
+    private static int ScoreCandidate(string name, string url)
+    {
+        if (string.IsNullOrWhiteSpace(name)) return 0;
+
+        Uri parsed;
+        if (!Uri.TryCreate(url, UriKind.Absolute, out parsed)) return 0;
+        if (!IsLoopback(parsed)) return 0;
+
+        if (string.Equals(name.Trim(), Program.ProductName, StringComparison.OrdinalIgnoreCase))
+            return 100;
+
+        string lower = name.ToLowerInvariant();
+        if (lower.IndexOf("deepseek", StringComparison.Ordinal) >= 0 ||
+            lower.IndexOf("harness", StringComparison.Ordinal) >= 0 ||
+            lower.IndexOf("dsh", StringComparison.Ordinal) >= 0)
+            return 50;
+
+        return 0;
+    }
+
+    private static bool IsLoopback(Uri uri)
+    {
+        if (uri.IsLoopback) return true;
+        return string.Equals(uri.Host, "localhost", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(uri.Host, "127.0.0.1", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(uri.Host, "[::1]", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsBrowserProfileName(string profileName)
+    {
+        if (string.IsNullOrEmpty(profileName)) return false;
+        if (profileName.IndexOf(' ') >= 0) return profileName.StartsWith("Profile ", StringComparison.Ordinal);
+        return string.Equals(profileName, "Default", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(profileName, "Guest Profile", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string ReadWebAppName(string appDir)
+    {
+        try
+        {
+            foreach (string iconFile in Directory.GetFiles(appDir, "*.ico.md5"))
+                return Path.GetFileNameWithoutExtension(Path.GetFileNameWithoutExtension(iconFile));
+        }
+        catch { }
+        return null;
+    }
+
+    private static bool TryReadShortcut(string shortcutPath, out string name, out string target, out string arguments)
+    {
+        name = Path.GetFileNameWithoutExtension(shortcutPath);
+        target = null;
+        arguments = null;
+        try
+        {
+            Type shellType = Type.GetTypeFromProgID("WScript.Shell");
+            if (shellType == null) return false;
+            object shell = Activator.CreateInstance(shellType);
+            object shortcut = shellType.InvokeMember(
+                "CreateShortcut", BindingFlags.InvokeMethod, null, shell, new object[] { shortcutPath });
+            Type shortcutType = shortcut.GetType();
+            target = shortcutType.InvokeMember(
+                "TargetPath", BindingFlags.GetProperty, null, shortcut, null) as string;
+            arguments = shortcutType.InvokeMember(
+                "Arguments", BindingFlags.GetProperty, null, shortcut, null) as string;
+            if (shortcut != null && Marshal.IsComObject(shortcut))
+                Marshal.ReleaseComObject(shortcut);
+            if (shell != null && Marshal.IsComObject(shell))
+                Marshal.ReleaseComObject(shell);
+            return !string.IsNullOrWhiteSpace(target);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static bool IsBrowserProxy(string targetPath)
+    {
+        if (string.IsNullOrWhiteSpace(targetPath)) return false;
+        string fileName = Path.GetFileName(targetPath);
+        return string.Equals(fileName, "chrome_proxy.exe", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(fileName, "msedge_proxy.exe", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(fileName, "msedge.exe", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(fileName, "chrome.exe", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string FindChromeProxy()
+    {
+        string[] roots =
+        {
+            Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
+            Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86)
+        };
+        for (int i = 0; i < roots.Length; i++)
+        {
+            if (string.IsNullOrEmpty(roots[i])) continue;
+            string proxy = Path.Combine(roots[i], @"Google\Chrome\Application\chrome_proxy.exe");
+            if (File.Exists(proxy)) return proxy;
+        }
+        return null;
+    }
+
+    private static string FindBrowserExecutable()
+    {
+        string[] candidates =
+        {
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), @"Google\Chrome\Application\chrome.exe"),
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), @"Microsoft\Edge\Application\msedge.exe"),
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), @"Microsoft\Edge\Application\msedge.exe")
+        };
+        for (int i = 0; i < candidates.Length; i++)
+            if (!string.IsNullOrEmpty(candidates[i]) && File.Exists(candidates[i]))
+                return candidates[i];
+        return null;
+    }
+
+    private static string AppendLaunchUrl(string arguments, string url)
+    {
+        if (arguments.IndexOf("--app-launch-url-for-shortcuts-menu-item", StringComparison.OrdinalIgnoreCase) >= 0)
+            return arguments;
+        return arguments.Trim() + " --app-launch-url-for-shortcuts-menu-item=" + Quote(url);
+    }
+
+    private static string Quote(string value)
+    {
+        return "\"" + value.Replace("\"", "\\\"") + "\"";
+    }
+
+    private static bool TryStart(string fileName, string arguments)
+    {
+        try
+        {
+            Process.Start(new ProcessStartInfo(fileName, arguments)
+            {
+                UseShellExecute = true,
+                WorkingDirectory = Path.GetDirectoryName(fileName)
+            });
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
     }
 }
 
@@ -625,7 +887,12 @@ internal sealed class TrayApplicationContext : ApplicationContext
             tray.ShowBalloonTip(3000);
             return;
         }
-        try { Process.Start(new ProcessStartInfo(url) { UseShellExecute = true }); } catch { }
+        try
+        {
+            if (!BrowserAppLauncher.TryOpen(url))
+                Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
+        }
+        catch { }
     }
 
     private void RestartDsh()

@@ -4,7 +4,7 @@
 
 这是一个适用于 [DeepSeek Harness（`dsh`）](https://github.com/deepseek-ai/deepseek-harness)的非官方 Windows 系统托盘启动器。
 
-它会在后台执行官方命令 `npx --yes @deepseek-ai/dsh web`，从 DSH 实际输出中提取 Web UI 地址，在就绪后自动打开浏览器，并在系统托盘提供日常管理菜单。
+它会在后台执行官方命令 `npx --yes @deepseek-ai/dsh web`，从 DSH 实际输出中提取 Web UI 地址，在就绪后优先以已安装的浏览器 PWA 打开，并在系统托盘提供日常管理菜单。
 
 > 非官方社区项目，与 DeepSeek AI 无隶属关系，也未获得其背书。
 
@@ -14,7 +14,7 @@
 - 桌面快捷方式直接指向 EXE，不使用 PowerShell、`ExecutionPolicy Bypass` 或隐藏脚本命令。
 - 执行 `npx --yes @deepseek-ai/dsh web`，避免后台运行时停在 npm 安装确认提示。
 - 从 `dsh web: <URL>` 输出中提取真实地址，不写死 `3080` 端口；即使 DSH 以后修改了这行提示，也会回退到探测默认端口。
-- DSH 就绪后自动打开默认浏览器。
+- DSH 就绪后自动打开 Web UI，优先使用已安装的 Chrome 或 Edge PWA，而不是普通浏览器标签页。
 - 现代化圆角托盘菜单，包含 **Open DSH**、**Restart DSH** 和 **Exit**。在 Windows 11 上由 DWM 负责圆角，并使用系统级窗口大阴影（与 Electron 应用相同的窗口效果），而不是 WinForms 弹出菜单默认的小硬阴影。
 - 安装和卸载通过独立的应用窗口给出反馈，不再使用控制台提示或系统自带的消息框；编译一结束控制台就会自动关闭。
 - 单实例保护：重复双击快捷方式只打开当前页面，不重复启动 DSH。
