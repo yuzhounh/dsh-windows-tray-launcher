@@ -573,6 +573,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
             ShowCheckMargin = false,
             ShowImageMargin = false
         };
+        menu.MinimumSize = new Size(MeasureMenuWidth(menu.Font), 0);
         openItem = CreateMenuItem("Open DSH", menu.Font, delegate { OpenDsh(); });
         openItem.Enabled = false;
         restartItem = CreateMenuItem("Restart DSH", menu.Font, delegate { RestartDsh(); });
@@ -607,15 +608,27 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
     private static ToolStripMenuItem CreateMenuItem(string text, Font font, EventHandler handler)
     {
-        int leftInset = TextRenderer.MeasureText("MM", font).Width;
-        var item = new ToolStripMenuItem(text, null, handler)
+        const int VerticalPadding = 15;
+
+        int leftInset = TextRenderer.MeasureText("M", font).Width;
+        int textHeight = TextRenderer.MeasureText(text, font).Height;
+        int itemHeight = textHeight + VerticalPadding * 2;
+
+        return new ModernMenuItem(text, handler)
         {
-            AutoSize = true,
+            AutoSize = false,
             Margin = new Padding(0, 0, 0, 0),
-            Padding = new Padding(leftInset, 15, 0, 15),
-            TextAlign = ContentAlignment.MiddleLeft
+            Size = new Size(MeasureMenuWidth(font), itemHeight),
+            TextAlign = ContentAlignment.MiddleLeft,
+            TextLeftInset = leftInset,
+            TextRightInset = leftInset
         };
-        return item;
+    }
+
+    private static int MeasureMenuWidth(Font font)
+    {
+        int horizontalUnit = TextRenderer.MeasureText("M", font).Width;
+        return TextRenderer.MeasureText("Restart DSH", font).Width + horizontalUnit * 5;
     }
 
     private void ApplyMenuRegion()
@@ -1644,6 +1657,16 @@ internal static class UiGeometry
     }
 }
 
+internal sealed class ModernMenuItem : ToolStripMenuItem
+{
+    internal int TextLeftInset;
+    internal int TextRightInset;
+
+    internal ModernMenuItem(string text, EventHandler handler) : base(text, null, handler)
+    {
+    }
+}
+
 internal sealed class ModernMenuRenderer : ToolStripProfessionalRenderer
 {
     internal ModernMenuRenderer() : base(new ModernMenuColorTable())
@@ -1698,7 +1721,13 @@ internal sealed class ModernMenuRenderer : ToolStripProfessionalRenderer
             ? Color.FromArgb(31, 35, 40)
             : Color.FromArgb(156, 163, 175);
 
+        var modern = e.Item as ModernMenuItem;
         var textRect = e.TextRectangle;
+        if (modern != null)
+        {
+            textRect.X = modern.TextLeftInset;
+            textRect.Width = e.Item.Width - modern.TextLeftInset - modern.TextRightInset;
+        }
         textRect.Y = 0;
         textRect.Height = e.Item.Height;
         TextFormatFlags flags = TextFormatFlags.VerticalCenter |

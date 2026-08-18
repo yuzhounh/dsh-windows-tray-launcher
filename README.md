@@ -1,5 +1,9 @@
 ﻿# DSH Windows Tray Launcher
 
+<p align="center">
+  <img src="dsh-favicon-black.svg" alt="DSH whale icon" width="80">
+</p>
+
 **English** | [中文](README.zh-CN.md)
 
 An unofficial Windows system tray launcher for [DeepSeek Harness (`dsh`)](https://github.com/deepseek-ai/deepseek-harness).
@@ -7,6 +11,12 @@ An unofficial Windows system tray launcher for [DeepSeek Harness (`dsh`)](https:
 It starts the official `npx --yes @deepseek-ai/dsh web` command in the background, waits for DSH to report its actual Web UI URL, opens that URL in the installed browser PWA when available, and keeps a small management menu in the Windows notification area.
 
 > Unofficial community project. Not affiliated with or endorsed by DeepSeek AI.
+
+## Preview
+
+<p align="center">
+  <img src="screenshot.png" alt="DeepSeek Harness Web UI launched by the Windows tray launcher" width="960">
+</p>
 
 ## Features
 

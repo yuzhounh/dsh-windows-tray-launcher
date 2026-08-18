@@ -1,5 +1,9 @@
 # DSH Windows 托盘启动器
 
+<p align="center">
+  <img src="dsh-favicon-black.svg" alt="DSH 鲸鱼图标" width="80">
+</p>
+
 [English](README.md) | **中文**
 
 这是一个适用于 [DeepSeek Harness（`dsh`）](https://github.com/deepseek-ai/deepseek-harness)的非官方 Windows 系统托盘启动器。
@@ -7,6 +11,12 @@
 它会在后台执行官方命令 `npx --yes @deepseek-ai/dsh web`，从 DSH 实际输出中提取 Web UI 地址，在就绪后优先以已安装的浏览器 PWA 打开，并在系统托盘提供日常管理菜单。
 
 > 非官方社区项目，与 DeepSeek AI 无隶属关系，也未获得其背书。
+
+## 界面预览
+
+<p align="center">
+  <img src="screenshot.png" alt="由 Windows 托盘启动器打开的 DeepSeek Harness Web UI" width="960">
+</p>
 
 ## 功能
 
