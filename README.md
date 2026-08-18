@@ -1,10 +1,12 @@
-﻿# DSH Windows Tray Launcher
-
 <p align="center">
   <img src="dsh-favicon-black.svg" alt="DSH whale icon" width="80">
 </p>
 
-**English** | [中文](README.zh-CN.md)
+<h1 align="center">DSH Windows Tray Launcher</h1>
+
+<p align="center">
+  <strong>English</strong> | <a href="README.zh-CN.md">中文</a>
+</p>
 
 An unofficial Windows system tray launcher for [DeepSeek Harness (`dsh`)](https://github.com/deepseek-ai/deepseek-harness).
 

@@ -1,10 +1,12 @@
-# DSH Windows 托盘启动器
-
 <p align="center">
   <img src="dsh-favicon-black.svg" alt="DSH 鲸鱼图标" width="80">
 </p>
 
-[English](README.md) | **中文**
+<h1 align="center">DSH Windows 托盘启动器</h1>
+
+<p align="center">
+  <a href="README.md">English</a> | <strong>中文</strong>
+</p>
 
 这是一个适用于 [DeepSeek Harness（`dsh`）](https://github.com/deepseek-ai/deepseek-harness)的非官方 Windows 系统托盘启动器。
 
