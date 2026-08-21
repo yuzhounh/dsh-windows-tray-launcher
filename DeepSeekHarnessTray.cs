@@ -391,6 +391,93 @@ internal static class BrowserAppLauncher
         return false;
     }
 
+    /// <summary>
+    /// Closes the DSH browser/PWA window without terminating the user's browser.
+    /// </summary>
+    internal static void TryClose()
+    {
+        try { EnumWindows(CloseDshWindow, IntPtr.Zero); }
+        catch { }
+    }
+
+    private delegate bool EnumWindowsProc(IntPtr window, IntPtr lParam);
+
+    private const int WmClose = 0x0010;
+
+    [DllImport("user32.dll")]
+    private static extern bool EnumWindows(EnumWindowsProc callback, IntPtr lParam);
+
+    [DllImport("user32.dll")]
+    private static extern bool IsWindowVisible(IntPtr window);
+
+    [DllImport("user32.dll", CharSet = CharSet.Auto)]
+    private static extern int GetWindowText(IntPtr window, StringBuilder text, int maxCount);
+
+    [DllImport("user32.dll", CharSet = CharSet.Auto)]
+    private static extern int GetWindowTextLength(IntPtr window);
+
+    [DllImport("user32.dll", CharSet = CharSet.Auto)]
+    private static extern int GetClassName(IntPtr window, StringBuilder className, int maxCount);
+
+    [DllImport("user32.dll", CharSet = CharSet.Auto)]
+    private static extern bool PostMessage(IntPtr window, int message, IntPtr wParam, IntPtr lParam);
+
+    [DllImport("user32.dll")]
+    private static extern uint GetWindowThreadProcessId(IntPtr window, out uint processId);
+
+    private static bool CloseDshWindow(IntPtr window, IntPtr lParam)
+    {
+        if (!IsWindowVisible(window)) return true;
+
+        var className = new StringBuilder(256);
+        if (GetClassName(window, className, className.Capacity) == 0) return true;
+        if (!string.Equals(className.ToString(), "Chrome_WidgetWin_1", StringComparison.Ordinal)) return true;
+        if (!IsBrowserWindow(window)) return true;
+
+        int length = GetWindowTextLength(window);
+        if (length <= 0) return true;
+
+        var title = new StringBuilder(length + 1);
+        GetWindowText(window, title, title.Capacity);
+        if (!MatchesDshTitle(title.ToString())) return true;
+
+        PostMessage(window, WmClose, IntPtr.Zero, IntPtr.Zero);
+        return true;
+    }
+
+    private static bool IsBrowserWindow(IntPtr window)
+    {
+        uint processId;
+        GetWindowThreadProcessId(window, out processId);
+        if (processId == 0) return false;
+        try
+        {
+            using (Process process = Process.GetProcessById((int)processId))
+            {
+                string name = process.ProcessName;
+                return name.StartsWith("chrome", StringComparison.OrdinalIgnoreCase) ||
+                    name.StartsWith("msedge", StringComparison.OrdinalIgnoreCase);
+            }
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static bool MatchesDshTitle(string title)
+    {
+        if (string.IsNullOrWhiteSpace(title)) return false;
+
+        if (string.Equals(title.Trim(), Program.ProductName, StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        string lower = title.ToLowerInvariant();
+        return lower.IndexOf("deepseek", StringComparison.Ordinal) >= 0 ||
+            lower.IndexOf("harness", StringComparison.Ordinal) >= 0 ||
+            lower.IndexOf("dsh", StringComparison.Ordinal) >= 0;
+    }
+
     private static PwaCandidate FindInstalledPwa(string url)
     {
         PwaCandidate best = null;
@@ -1437,6 +1524,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
     private void StopDsh()
     {
+        BrowserAppLauncher.TryClose();
         DeleteUrlState();
         url = null;
         openItem.Enabled = false;
