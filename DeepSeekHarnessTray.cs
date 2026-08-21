@@ -19,8 +19,8 @@ using System.Windows.Forms;
 [assembly: AssemblyTitle("DeepSeek Harness Tray")]
 [assembly: AssemblyProduct("DeepSeek Harness Tray")]
 [assembly: AssemblyDescription("Local Windows tray launcher for DeepSeek Harness")]
-[assembly: AssemblyVersion("1.7.0.0")]
-[assembly: AssemblyFileVersion("1.7.0.0")]
+[assembly: AssemblyVersion("1.8.0.0")]
+[assembly: AssemblyFileVersion("1.8.0.0")]
 
 internal static class Program
 {
@@ -107,9 +107,8 @@ internal static class Program
             if (!File.Exists(path)) return;
             Uri uri;
             if (Uri.TryCreate(File.ReadAllText(path).Trim(), UriKind.Absolute, out uri) &&
-                (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps) &&
-                !BrowserAppLauncher.TryOpen(uri.AbsoluteUri))
-                Process.Start(new ProcessStartInfo(uri.AbsoluteUri) { UseShellExecute = true });
+                (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps))
+                DshBrowserGate.TryOpen(uri.AbsoluteUri, respectDebounce: false);
         }
         catch { }
     }
@@ -161,6 +160,9 @@ internal static class Program
             DeleteIfPresent(Path.Combine(AppDirectory, "dsh-web.url"));
             DeleteIfPresent(Path.Combine(AppDirectory, "dsh-web.log"));
             DeleteIfPresent(Path.Combine(AppDirectory, "dsh-web-error.log"));
+            DeleteIfPresent(Path.Combine(AppDirectory, "dsh-package-version.txt"));
+            DeleteIfPresent(Path.Combine(AppDirectory, "dsh-update-pending.flag"));
+            DeleteIfPresent(Path.Combine(AppDirectory, "dsh-web.last-open"));
             try { Directory.Delete(AppDirectory, false); } catch { }
 
             ModernDialog.Inform(
@@ -258,6 +260,76 @@ internal static class Program
 }
 
 /// <summary>
+/// Opens DSH through one code path and suppresses duplicate launches when the installer
+/// Start button and the desktop shortcut fire almost back-to-back.
+/// </summary>
+internal static class DshBrowserGate
+{
+    private const int DebounceMs = 8000;
+    private static readonly string StampPath = Path.Combine(Program.AppDirectory, "dsh-web.last-open");
+    private static readonly Mutex OpenMutex = new Mutex(false, @"Local\DeepSeekHarnessTrayDshOpen");
+
+    internal static void ClearOpenStamp()
+    {
+        try { if (File.Exists(StampPath)) File.Delete(StampPath); } catch { }
+    }
+
+    internal static bool TryOpen(string url, bool respectDebounce)
+    {
+        if (string.IsNullOrWhiteSpace(url)) return false;
+        if (!TryClaimOpen(respectDebounce)) return false;
+        if (BrowserAppLauncher.TryOpen(url)) return true;
+        if (BrowserAppLauncher.HasInstalledPwa(url)) return false;
+        try
+        {
+            Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    internal static bool TryOpen(string url)
+    {
+        return TryOpen(url, respectDebounce: true);
+    }
+
+    private static bool TryClaimOpen(bool respectDebounce)
+    {
+        bool owned = false;
+        try
+        {
+            try { owned = OpenMutex.WaitOne(0); }
+            catch { return false; }
+            if (!owned) return false;
+
+            Directory.CreateDirectory(Program.AppDirectory);
+            if (respectDebounce && File.Exists(StampPath))
+            {
+                DateTime written = File.GetLastWriteTimeUtc(StampPath);
+                if ((DateTime.UtcNow - written).TotalMilliseconds < DebounceMs)
+                    return false;
+            }
+            File.WriteAllText(StampPath, DateTime.UtcNow.ToString("o"), new UTF8Encoding(false));
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+        finally
+        {
+            if (owned)
+            {
+                try { OpenMutex.ReleaseMutex(); } catch { }
+            }
+        }
+    }
+}
+
+/// <summary>
 /// Opens DSH in an installed browser PWA when one is available, otherwise in a
 /// standalone --app window, before falling back to a normal browser tab.
 /// </summary>
@@ -275,9 +347,25 @@ internal static class BrowserAppLauncher
 
     private sealed class PwaCandidate
     {
+        internal string ShortcutPath;
         internal string ProxyPath;
         internal string Arguments;
         internal int Score;
+    }
+
+    private static readonly Regex LaunchUrlArgumentPattern = new Regex(
+        @"\s*--app-launch-url-for-shortcuts-menu-item(?:=\""[^\""]*\""|=\S+)?",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    private static readonly Regex AppIdArgumentPattern = new Regex(
+        @"--app-id=(\S+)",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    private static readonly Regex ProfileArgumentPattern = new Regex(
+        @"--profile-directory=(?:\""([^\""]+)\""|(\S+))",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    internal static bool HasInstalledPwa(string url)
+    {
+        return FindInstalledPwa(url) != null;
     }
 
     internal static bool TryOpen(string url)
@@ -285,8 +373,8 @@ internal static class BrowserAppLauncher
         if (string.IsNullOrWhiteSpace(url)) return false;
 
         PwaCandidate installed = FindInstalledPwa(url);
-        if (installed != null && TryStart(installed.ProxyPath, AppendLaunchUrl(installed.Arguments, url)))
-            return true;
+        if (installed != null)
+            return TryStart(installed.ProxyPath, SanitizePwaArguments(installed.Arguments));
 
         string browser = FindBrowserExecutable();
         if (browser != null && TryStart(browser, "--app=" + Quote(url)))
@@ -320,7 +408,7 @@ internal static class BrowserAppLauncher
 
                 int score = ScoreCandidate(name, url);
                 if (score <= 0) continue;
-                ConsiderCandidate(ref best, target, arguments, score);
+                ConsiderCandidate(ref best, shortcutPath, target, arguments, score);
             }
         }
         catch { }
@@ -354,22 +442,47 @@ internal static class BrowserAppLauncher
                     if (score <= 0) continue;
 
                     string arguments = "--profile-directory=" + profileName + " --app-id=" + appId;
-                    ConsiderCandidate(ref best, proxy, arguments, score - 5);
+                    ConsiderCandidate(ref best, null, proxy, arguments, score - 5);
                 }
             }
         }
         catch { }
     }
 
-    private static void ConsiderCandidate(ref PwaCandidate best, string proxyPath, string arguments, int score)
+    private static void ConsiderCandidate(
+        ref PwaCandidate best,
+        string shortcutPath,
+        string proxyPath,
+        string arguments,
+        int score)
     {
         if (best != null && score <= best.Score) return;
         best = new PwaCandidate
         {
+            ShortcutPath = shortcutPath,
             ProxyPath = proxyPath,
             Arguments = arguments,
             Score = score
         };
+    }
+
+    private static string SanitizePwaArguments(string arguments)
+    {
+        if (string.IsNullOrWhiteSpace(arguments)) return "";
+
+        Match appId = AppIdArgumentPattern.Match(arguments);
+        if (!appId.Success)
+            return LaunchUrlArgumentPattern.Replace(arguments, "").Trim();
+
+        var minimal = new StringBuilder();
+        Match profile = ProfileArgumentPattern.Match(arguments);
+        if (profile.Success)
+        {
+            string profileName = profile.Groups[1].Success ? profile.Groups[1].Value : profile.Groups[2].Value;
+            minimal.Append("--profile-directory=").Append(Quote(profileName)).Append(' ');
+        }
+        minimal.Append("--app-id=").Append(appId.Groups[1].Value);
+        return minimal.ToString();
     }
 
     private static int ScoreCandidate(string name, string url)
@@ -488,13 +601,6 @@ internal static class BrowserAppLauncher
         return null;
     }
 
-    private static string AppendLaunchUrl(string arguments, string url)
-    {
-        if (arguments.IndexOf("--app-launch-url-for-shortcuts-menu-item", StringComparison.OrdinalIgnoreCase) >= 0)
-            return arguments;
-        return arguments.Trim() + " --app-launch-url-for-shortcuts-menu-item=" + Quote(url);
-    }
-
     private static string Quote(string value)
     {
         return "\"" + value.Replace("\"", "\\\"") + "\"";
@@ -515,6 +621,189 @@ internal static class BrowserAppLauncher
         {
             return false;
         }
+    }
+}
+
+/// <summary>
+/// Checks the npm registry for a newer @deepseek-ai/dsh release and prefetches it into
+/// the npx cache without blocking startup. Restarting DSH picks up @latest automatically.
+/// </summary>
+internal static class DshPackageUpdater
+{
+    internal const string PackageName = "@deepseek-ai/dsh";
+    private static readonly string VersionState = Path.Combine(Program.AppDirectory, "dsh-package-version.txt");
+    private static readonly string UpdatePendingFlag = Path.Combine(Program.AppDirectory, "dsh-update-pending.flag");
+    private static readonly Regex VersionPattern = new Regex(
+        @"(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)", RegexOptions.Compiled);
+    private static int checking;
+
+    internal static bool IsUpdatePending()
+    {
+        return File.Exists(UpdatePendingFlag);
+    }
+
+    internal static string PackageSpecForStart(bool restart)
+    {
+        if (restart || IsUpdatePending()) return PackageName + "@latest";
+        return PackageName;
+    }
+
+    internal static void ScheduleBackgroundCheck(
+        SynchronizationContext ui,
+        Action<string> log,
+        Action<string> onUpdateReady)
+    {
+        if (Interlocked.CompareExchange(ref checking, 1, 0) != 0) return;
+        ThreadPool.QueueUserWorkItem(delegate
+        {
+            try { RunBackgroundCheck(log, onUpdateReady, ui); }
+            catch { }
+            finally { Interlocked.Exchange(ref checking, 0); }
+        });
+    }
+
+    internal static string PrefetchLatestBlocking(Action<string> log)
+    {
+        return PrefetchLatest(log);
+    }
+
+    internal static string ReadPendingVersion()
+    {
+        try
+        {
+            if (!File.Exists(UpdatePendingFlag)) return null;
+            return ExtractVersion(File.ReadAllText(UpdatePendingFlag));
+        }
+        catch { return null; }
+    }
+
+    internal static void MarkRunningVersion(string version)
+    {
+        if (string.IsNullOrWhiteSpace(version)) return;
+        try
+        {
+            File.WriteAllText(VersionState, version.Trim(), new UTF8Encoding(false));
+            if (File.Exists(UpdatePendingFlag)) File.Delete(UpdatePendingFlag);
+        }
+        catch { }
+    }
+
+    private static void RunBackgroundCheck(
+        Action<string> log,
+        Action<string> onUpdateReady,
+        SynchronizationContext ui)
+    {
+        string registryVersion = QueryRegistryVersion(log);
+        if (registryVersion == null) return;
+
+        string knownVersion = ReadKnownVersion();
+        if (knownVersion != null &&
+            string.Equals(knownVersion, registryVersion, StringComparison.OrdinalIgnoreCase)) return;
+        if (knownVersion == null)
+        {
+            log("DSH update check deferred: running version is not known yet");
+            return;
+        }
+
+        log("DSH update available: " + knownVersion + " -> " + registryVersion);
+        try { File.WriteAllText(UpdatePendingFlag, registryVersion, new UTF8Encoding(false)); } catch { }
+        Post(ui, delegate { onUpdateReady(registryVersion); });
+    }
+
+    private static string QueryRegistryVersion(Action<string> log)
+    {
+        string output = RunNpmCommand("npm.cmd view " + PackageName + " version", 30000);
+        if (output == null)
+        {
+            log("DSH update check skipped: npm view failed");
+            return null;
+        }
+        return ExtractVersion(output);
+    }
+
+    private static string PrefetchLatest(Action<string> log)
+    {
+        string output = RunNpmCommand("npx.cmd --yes " + PackageName + "@latest --version", 300000);
+        if (output == null)
+        {
+            log("DSH update prefetch failed");
+            return null;
+        }
+        string version = ExtractVersion(output);
+        if (version == null) log("DSH update prefetch returned no version");
+        return version;
+    }
+
+    private static string ReadKnownVersion()
+    {
+        try
+        {
+            if (!File.Exists(VersionState)) return null;
+            return ExtractVersion(File.ReadAllText(VersionState));
+        }
+        catch { return null; }
+    }
+
+    private static string ExtractVersion(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return null;
+        Match match = VersionPattern.Match(text.Trim());
+        return match.Success ? match.Groups[1].Value : null;
+    }
+
+    private static string RunNpmCommand(string command, int timeoutMs)
+    {
+        Process process = null;
+        try
+        {
+            var info = new ProcessStartInfo
+            {
+                FileName = Environment.GetEnvironmentVariable("ComSpec") ?? "cmd.exe",
+                Arguments = "/d /s /c \"" + command + " 2>&1\"",
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                WindowStyle = ProcessWindowStyle.Hidden,
+                RedirectStandardOutput = true,
+                RedirectStandardError = false,
+                StandardOutputEncoding = Encoding.UTF8
+            };
+            process = Process.Start(info);
+            if (process == null) return null;
+
+            var output = new StringBuilder();
+            process.OutputDataReceived += delegate(object sender, DataReceivedEventArgs e)
+            {
+                if (e.Data != null) output.AppendLine(e.Data);
+            };
+            process.BeginOutputReadLine();
+            if (!process.WaitForExit(timeoutMs))
+            {
+                try { process.Kill(); } catch { }
+                return null;
+            }
+            process.WaitForExit();
+            if (process.ExitCode != 0) return null;
+            string combined = output.ToString().Trim();
+            return string.IsNullOrEmpty(combined) ? null : combined;
+        }
+        catch
+        {
+            return null;
+        }
+        finally
+        {
+            if (process != null) process.Dispose();
+        }
+    }
+
+    private static void Post(SynchronizationContext ui, SendOrPostCallback callback)
+    {
+        if (ui != null)
+        {
+            try { ui.Post(callback, null); return; }
+            catch { }
+        }
+        callback(null);
     }
 }
 
@@ -556,6 +845,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private string url;
     private int generation;
     private bool exiting;
+    private bool startedWithLatest;
 
     internal TrayApplicationContext()
     {
@@ -603,7 +893,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
             // browser and immediately dismisses the context menu before it can be used.
             if (e.Button == MouseButtons.Left) OpenDsh();
         };
-        StartDsh();
+        StartDsh(restart: false);
     }
 
     private static ToolStripMenuItem CreateMenuItem(string text, Font font, EventHandler handler)
@@ -644,7 +934,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         if (oldRegion != null) oldRegion.Dispose();
     }
 
-    private void StartDsh()
+    private void StartDsh(bool restart)
     {
         if (dsh != null && !dsh.HasExited) return;
         url = null;
@@ -655,6 +945,8 @@ internal sealed class TrayApplicationContext : ApplicationContext
         File.WriteAllText(stdoutLog, "", new UTF8Encoding(false));
         File.WriteAllText(stderrLog, "", new UTF8Encoding(false));
         int thisGeneration = ++generation;
+        string packageSpec = DshPackageUpdater.PackageSpecForStart(restart);
+        startedWithLatest = packageSpec.IndexOf("@latest", StringComparison.OrdinalIgnoreCase) >= 0;
 
         if (!EnsurePortIsFree())
         {
@@ -667,7 +959,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
             var info = new ProcessStartInfo
             {
                 FileName = Environment.GetEnvironmentVariable("ComSpec") ?? "cmd.exe",
-                Arguments = "/d /s /c \"npx.cmd --yes @deepseek-ai/dsh web\"",
+                Arguments = "/d /s /c \"npx.cmd --yes " + packageSpec + " web --no-open\"",
                 UseShellExecute = false,
                 CreateNoWindow = true,
                 WindowStyle = ProcessWindowStyle.Hidden,
@@ -695,6 +987,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
                 AppendTrayNote("job object unavailable; falling back to taskkill for shutdown");
             process.BeginOutputReadLine();
             process.BeginErrorReadLine();
+            AppendTrayNote("starting " + packageSpec + " web --no-open");
             SetTrayText(Program.ProductName + " - Starting...");
             StartProbe();
         }
@@ -827,8 +1120,49 @@ internal sealed class TrayApplicationContext : ApplicationContext
         try { File.WriteAllText(urlState, url, new UTF8Encoding(false)); } catch { }
         StopProbe();
         openItem.Enabled = true;
-        SetTrayText(Program.ProductName + " - Running");
+        RefreshRunningTrayText();
+        TryCaptureRunningVersion();
+        ScheduleBackgroundUpdateCheck();
         OpenDsh();
+    }
+
+    private void RefreshRunningTrayText()
+    {
+        if (exiting || string.IsNullOrEmpty(url)) return;
+        SetTrayText(Program.ProductName + " - Running");
+    }
+
+    private void ScheduleBackgroundUpdateCheck()
+    {
+        DshPackageUpdater.ScheduleBackgroundCheck(
+            ui,
+            AppendTrayNote,
+            delegate(string version)
+            {
+                if (exiting) return;
+                tray.BalloonTipTitle = Program.ProductName + " update ready";
+                tray.BalloonTipText = "DSH " + version +
+                    " is available. Choose Restart DSH to download and switch to the latest version.";
+                tray.BalloonTipIcon = ToolTipIcon.Info;
+                tray.ShowBalloonTip(8000);
+            });
+    }
+
+    private void TryCaptureRunningVersion()
+    {
+        string version = ExtractDshVersion(ReadLog(stdoutLog));
+        if (version == null) version = ExtractDshVersion(ReadLog(stderrLog));
+        if (version == null && startedWithLatest)
+            version = DshPackageUpdater.ReadPendingVersion();
+        DshPackageUpdater.MarkRunningVersion(version);
+        startedWithLatest = false;
+    }
+
+    private static string ExtractDshVersion(string log)
+    {
+        if (string.IsNullOrEmpty(log)) return null;
+        Match match = Regex.Match(log, @"dsh(?:\s+web)?\s+v?(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)", RegexOptions.IgnoreCase);
+        return match.Success ? match.Groups[1].Value : null;
     }
 
     private void SetTrayText(string tooltip)
@@ -900,18 +1234,23 @@ internal sealed class TrayApplicationContext : ApplicationContext
             tray.ShowBalloonTip(3000);
             return;
         }
-        try
-        {
-            if (!BrowserAppLauncher.TryOpen(url))
-                Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
-        }
+        try { DshBrowserGate.TryOpen(url); }
         catch { }
     }
 
     private void RestartDsh()
     {
         restartItem.Enabled = false;
-        try { StopDsh(); StartDsh(); }
+        try
+        {
+            StopDsh();
+            if (DshPackageUpdater.IsUpdatePending())
+            {
+                SetTrayText(Program.ProductName + " - Updating");
+                DshPackageUpdater.PrefetchLatestBlocking(AppendTrayNote);
+            }
+            StartDsh(restart: true);
+        }
         finally { restartItem.Enabled = true; }
     }
 
@@ -975,6 +1314,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private void DeleteUrlState()
     {
         try { if (File.Exists(urlState)) File.Delete(urlState); } catch { }
+        DshBrowserGate.ClearOpenStamp();
     }
 
     protected override void Dispose(bool disposing)
