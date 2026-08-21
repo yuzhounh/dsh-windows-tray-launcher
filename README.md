@@ -10,7 +10,7 @@
 
 An unofficial Windows system tray launcher for [DeepSeek Harness (`dsh`)](https://github.com/deepseek-ai/deepseek-harness).
 
-It starts the official `npx --yes @deepseek-ai/dsh web` command in the background, waits for DSH to report its actual Web UI URL, opens that URL in the installed browser PWA when available, and keeps a small management menu in the Windows notification area.
+It manages isolated local copies of npm's official `latest` DSH release, prepares updates in the background, opens the Web UI in the installed browser PWA when available, and keeps a small management menu in the Windows notification area.
 
 > Unofficial community project. Not affiliated with or endorsed by DeepSeek AI.
 
@@ -24,7 +24,11 @@ It starts the official `npx --yes @deepseek-ai/dsh web` command in the backgroun
 
 - Native Windows tray application written in C#; no persistent console window.
 - Direct EXE shortcut—no PowerShell, `ExecutionPolicy Bypass`, or hidden script command in the shortcut.
-- Runs `npx --yes @deepseek-ai/dsh web`, so an npm installation prompt cannot block the hidden process.
+- Follows only npm's default `latest` release channel; preview releases published under `next` are not installed.
+- When no managed copy exists yet, starts through npx first so the PWA is not blocked by the background managed installation.
+- Downloads a newer `latest` release into an isolated version directory while DSH keeps running.
+- **Restart DSH**, or a full exit and reopen, switches to the prepared release without another download.
+- Automatically rolls back if the newly selected release cannot start.
 - Extracts the actual URL from `dsh web: <URL>` output instead of assuming port `3080`, and falls back to probing the default port if DSH ever changes that message.
 - Opens the DSH Web UI automatically after it is ready, preferring an installed Chrome or Edge PWA over a normal browser tab.
 - Modern rounded tray menu with **Open DSH**, **Restart DSH**, and **Exit**. On Windows 11 the popup uses DWM rounding and the large system window shadow, the same chrome Electron apps get, instead of the small hard WinForms popup shadow.
@@ -38,8 +42,8 @@ It starts the official `npx --yes @deepseek-ai/dsh web` command in the backgroun
 ## Requirements
 
 - Windows 10 or Windows 11
-- Node.js with `npm` and `npx`
-- Internet access when `npx` needs to download `@deepseek-ai/dsh`
+- Node.js with `npm`
+- Internet access when the launcher checks or downloads `@deepseek-ai/dsh@latest`
 - Windows .NET Framework C# compiler (included with normal Windows .NET Framework installations)
 
 ## Install
@@ -65,9 +69,10 @@ It also creates shortcuts on the current user's desktop and Start menu. Those sh
 Double-click the **DeepSeek Harness** desktop shortcut whenever you need DSH.
 
 - If the launcher is not running, it starts DSH and opens the browser after DSH reports that it is ready.
+- A full exit and reopen automatically switches to a prepared `latest` update.
 - If the launcher is already running, another launch opens the current DSH page without starting a second process.
 - Clicking the tray icon opens DSH. Right-click for **Restart DSH** and **Exit**.
-- **Restart DSH** stops and starts only the managed DSH process tree.
+- **Restart DSH** switches to a prepared `latest` update and restarts the managed process tree.
 - **Exit** closes the managed DSH process tree and the tray launcher.
 
 DSH does not have to remain running permanently. After choosing **Exit**, use the desktop shortcut to start it again later.
@@ -88,7 +93,10 @@ Double-click `Uninstall.cmd` in the downloaded repository folder. It offers to c
 ```text
 %LOCALAPPDATA%\DeepSeekHarnessTray\dsh-web.log
 %LOCALAPPDATA%\DeepSeekHarnessTray\dsh-web-error.log
+%LOCALAPPDATA%\DeepSeekHarnessTray\dsh-package-install.log
 %LOCALAPPDATA%\DeepSeekHarnessTray\dsh-web.url
+%LOCALAPPDATA%\DeepSeekHarnessTray\dsh\versions
+%LOCALAPPDATA%\DeepSeekHarnessTray\npm-cache
 ```
 
 `dsh-web.url` exists only while the managed DSH instance has reported a valid HTTP or HTTPS URL. It is cleared on restart and on **Exit**, and if the launcher is force-killed it is cleared at the next launch.
@@ -109,7 +117,7 @@ Get-NetTCPConnection -LocalPort 3080 -State Listen |
 ```
 
 **The first start takes several minutes.**
-A cold `npx --yes @deepseek-ai/dsh` has to download and install DSH before the server binds. The tray tooltip shows `Starting...` during this time.
+If no managed copy exists yet, the launcher starts the available npx copy first. After DSH is ready, npm's current `latest` release is prepared in the background; its output is written to `dsh-package-install.log`.
 
 ## Security notes
 

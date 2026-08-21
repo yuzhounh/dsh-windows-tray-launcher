@@ -10,7 +10,7 @@
 
 这是一个适用于 [DeepSeek Harness（`dsh`）](https://github.com/deepseek-ai/deepseek-harness)的非官方 Windows 系统托盘启动器。
 
-它会在后台执行官方命令 `npx --yes @deepseek-ai/dsh web`，从 DSH 实际输出中提取 Web UI 地址，在就绪后优先以已安装的浏览器 PWA 打开，并在系统托盘提供日常管理菜单。
+它会管理 npm 官方 `latest` 通道的本地隔离版本，在后台准备更新，从实际输出中提取 Web UI 地址，在就绪后优先以已安装的浏览器 PWA 打开，并在系统托盘提供日常管理菜单。
 
 > 非官方社区项目，与 DeepSeek AI 无隶属关系，也未获得其背书。
 
@@ -24,7 +24,11 @@
 
 - 使用 C# 编写的原生 Windows 托盘程序，不保留控制台窗口。
 - 桌面快捷方式直接指向 EXE，不使用 PowerShell、`ExecutionPolicy Bypass` 或隐藏脚本命令。
-- 执行 `npx --yes @deepseek-ai/dsh web`，避免后台运行时停在 npm 安装确认提示。
+- 只跟随 npm 默认的 `latest` 发布通道，不会安装发布在 `next` 通道的预览版本。
+- 尚无托管版本时先通过 npx 启动，避免后台安装阻塞 PWA。
+- 当前 DSH 运行期间，把新的 `latest` 版本下载到独立目录。
+- 选择 **Restart DSH**，或完整退出后重新打开，即可切换到已准备好的版本，无需再次下载。
+- 新版本无法启动时自动回滚。
 - 从 `dsh web: <URL>` 输出中提取真实地址，不写死 `3080` 端口；即使 DSH 以后修改了这行提示，也会回退到探测默认端口。
 - DSH 就绪后自动打开 Web UI，优先使用已安装的 Chrome 或 Edge PWA，而不是普通浏览器标签页。
 - 现代化圆角托盘菜单，包含 **Open DSH**、**Restart DSH** 和 **Exit**。在 Windows 11 上由 DWM 负责圆角，并使用系统级窗口大阴影（与 Electron 应用相同的窗口效果），而不是 WinForms 弹出菜单默认的小硬阴影。
@@ -38,8 +42,8 @@
 ## 系统要求
 
 - Windows 10 或 Windows 11
-- 已安装 Node.js、npm 和 npx
-- `npx` 需要下载 `@deepseek-ai/dsh` 时能够访问网络
+- 已安装 Node.js 和 npm
+- 启动器检查或下载 `@deepseek-ai/dsh@latest` 时能够访问网络
 - Windows .NET Framework C# 编译器（正常的 Windows .NET Framework 环境通常已经包含）
 
 ## 安装
@@ -65,9 +69,10 @@
 需要使用 DSH 时，双击桌面的 **DeepSeek Harness** 快捷方式即可。
 
 - 启动器未运行时：后台启动 DSH，检测就绪地址后自动打开浏览器。
+- 完整退出后重新打开，会自动切换到已经准备好的 `latest` 更新。
 - 启动器已经运行时：重复启动只打开当前 DSH 页面，不产生第二个实例。
 - 单击托盘图标打开 DSH；右键打开菜单（**Restart DSH**、**Exit**）。
-- **Restart DSH**：仅重启由启动器管理的 DSH 进程树。
+- **Restart DSH**：切换到已准备好的 `latest` 更新并重启进程树。
 - **Exit**：关闭 DSH 进程树和托盘启动器。
 
 DSH 不需要永久驻留后台。选择 **Exit** 后，下次使用时重新双击桌面快捷方式即可。
@@ -88,7 +93,10 @@ DSH 不需要永久驻留后台。选择 **Exit** 后，下次使用时重新双
 ```text
 %LOCALAPPDATA%\DeepSeekHarnessTray\dsh-web.log
 %LOCALAPPDATA%\DeepSeekHarnessTray\dsh-web-error.log
+%LOCALAPPDATA%\DeepSeekHarnessTray\dsh-package-install.log
 %LOCALAPPDATA%\DeepSeekHarnessTray\dsh-web.url
+%LOCALAPPDATA%\DeepSeekHarnessTray\dsh\versions
+%LOCALAPPDATA%\DeepSeekHarnessTray\npm-cache
 ```
 
 只有在 DSH 报告了有效的 HTTP/HTTPS 地址并保持运行时，`dsh-web.url` 才会存在。重启和选择 **Exit** 时会清除该文件；若启动器被强制结束，则在下次启动时清除，避免打开失效地址。
@@ -109,7 +117,7 @@ Get-NetTCPConnection -LocalPort 3080 -State Listen |
 ```
 
 **首次启动需要好几分钟。**
-首次执行 `npx --yes @deepseek-ai/dsh` 需要先下载并安装 DSH，之后服务器才会监听端口。这段时间托盘提示会显示 `Starting...`。
+尚无托管版本时，启动器会先运行当前可用的 npx 副本。DSH 就绪后再于后台准备 npm 当前的 `latest` 版本，安装输出记录在 `dsh-package-install.log`。
 
 ## 安全说明
 

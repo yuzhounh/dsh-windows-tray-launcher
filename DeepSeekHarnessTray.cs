@@ -19,8 +19,8 @@ using System.Windows.Forms;
 [assembly: AssemblyTitle("DeepSeek Harness Tray")]
 [assembly: AssemblyProduct("DeepSeek Harness Tray")]
 [assembly: AssemblyDescription("Local Windows tray launcher for DeepSeek Harness")]
-[assembly: AssemblyVersion("1.8.0.0")]
-[assembly: AssemblyFileVersion("1.8.0.0")]
+[assembly: AssemblyVersion("1.9.0.0")]
+[assembly: AssemblyFileVersion("1.9.0.0")]
 
 internal static class Program
 {
@@ -160,9 +160,12 @@ internal static class Program
             DeleteIfPresent(Path.Combine(AppDirectory, "dsh-web.url"));
             DeleteIfPresent(Path.Combine(AppDirectory, "dsh-web.log"));
             DeleteIfPresent(Path.Combine(AppDirectory, "dsh-web-error.log"));
+            DeleteIfPresent(Path.Combine(AppDirectory, "dsh-package-install.log"));
             DeleteIfPresent(Path.Combine(AppDirectory, "dsh-package-version.txt"));
             DeleteIfPresent(Path.Combine(AppDirectory, "dsh-update-pending.flag"));
             DeleteIfPresent(Path.Combine(AppDirectory, "dsh-web.last-open"));
+            DeleteDirectoryIfPresent(Path.Combine(AppDirectory, "dsh"));
+            DeleteDirectoryIfPresent(Path.Combine(AppDirectory, "npm-cache"));
             try { Directory.Delete(AppDirectory, false); } catch { }
 
             ModernDialog.Inform(
@@ -237,6 +240,11 @@ internal static class Program
     private static void DeleteIfPresent(string path)
     {
         if (File.Exists(path)) File.Delete(path);
+    }
+
+    private static void DeleteDirectoryIfPresent(string path)
+    {
+        try { if (Directory.Exists(path)) Directory.Delete(path, true); } catch { }
     }
 
     private static void CreateShortcut(string shortcutPath, string targetPath)
@@ -625,137 +633,180 @@ internal static class BrowserAppLauncher
 }
 
 /// <summary>
-/// Checks the npm registry for a newer @deepseek-ai/dsh release and prefetches it into
-/// the npx cache without blocking startup. Restarting DSH picks up @latest automatically.
+/// Installs only npm's "latest" DSH release into isolated version directories. A new
+/// release is prepared in the background without modifying the running version.
 /// </summary>
-internal static class DshPackageUpdater
+internal static class DshPackageManager
 {
-    internal const string PackageName = "@deepseek-ai/dsh";
-    private static readonly string VersionState = Path.Combine(Program.AppDirectory, "dsh-package-version.txt");
-    private static readonly string UpdatePendingFlag = Path.Combine(Program.AppDirectory, "dsh-update-pending.flag");
+    private const string PackageName = "@deepseek-ai/dsh";
+    private const int RegistryTimeoutMs = 30000;
+    private const int InstallTimeoutMs = 900000;
+    private static readonly string Root = Path.Combine(Program.AppDirectory, "dsh");
+    private static readonly string Versions = Path.Combine(Root, "versions");
+    private static readonly string Cache = Path.Combine(Program.AppDirectory, "npm-cache");
+    private static readonly string CurrentFile = Path.Combine(Root, "current-version.txt");
+    private static readonly string ReadyFile = Path.Combine(Root, "ready-version.txt");
+    private static readonly string RollbackFile = Path.Combine(Root, "rollback-version.txt");
+    private static readonly string PackageLog = Path.Combine(Program.AppDirectory, "dsh-package-install.log");
     private static readonly Regex VersionPattern = new Regex(
-        @"(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)", RegexOptions.Compiled);
-    private static int checking;
+        @"^\s*(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?)\s*$",
+        RegexOptions.Compiled);
+    private static readonly object processLock = new object();
+    private static readonly object logLock = new object();
+    private static Process packageProcess;
+    private static int working;
+    private static bool cancelling;
 
-    internal static bool IsUpdatePending()
+    internal static string CurrentVersion { get { return ReadState(CurrentFile); } }
+    internal static string ReadyVersion { get { return ReadState(ReadyFile); } }
+    internal static string CurrentCommand
     {
-        return File.Exists(UpdatePendingFlag);
+        get
+        {
+            string version = CurrentVersion;
+            return IsInstalled(version) ? CommandFor(version) : null;
+        }
+    }
+    internal static string PendingRollbackVersion
+    {
+        get
+        {
+            string version = ReadState(RollbackFile);
+            return IsInstalled(version) &&
+                !string.Equals(version, CurrentVersion, StringComparison.OrdinalIgnoreCase)
+                ? version : null;
+        }
     }
 
-    internal static string PackageSpecForStart(bool restart)
-    {
-        if (restart || IsUpdatePending()) return PackageName + "@latest";
-        return PackageName;
-    }
-
-    internal static void ScheduleBackgroundCheck(
+    internal static void StageLatestAsync(
         SynchronizationContext ui,
         Action<string> log,
-        Action<string> onUpdateReady)
+        Action<string> installing,
+        Action<string> ready,
+        Action<string> failed)
     {
-        if (Interlocked.CompareExchange(ref checking, 1, 0) != 0) return;
+        RunExclusive(delegate
+        {
+            string latest = QueryLatest(log);
+            if (latest == null) return "The npm latest-version check failed.";
+            string current = CurrentVersion;
+            string staged = ReadyVersion;
+            if (string.Equals(latest, current, StringComparison.OrdinalIgnoreCase) && IsInstalled(current))
+            {
+                if (!string.Equals(staged, current, StringComparison.OrdinalIgnoreCase))
+                    DeleteState(ReadyFile);
+                return null;
+            }
+            if (string.Equals(latest, staged, StringComparison.OrdinalIgnoreCase) && IsInstalled(staged))
+                return null;
+
+            Post(ui, delegate { installing(latest); });
+            if (!Install(latest, log)) return "Could not prepare DSH " + latest + ".";
+            WriteState(ReadyFile, latest);
+            Post(ui, delegate { ready(latest); });
+            return null;
+        }, ui, null, failed);
+    }
+
+    internal static string PromoteReady()
+    {
+        string staged = ReadyVersion;
+        if (!IsInstalled(staged)) return null;
+        string previous = CurrentVersion;
+        if (string.Equals(staged, previous, StringComparison.OrdinalIgnoreCase))
+        {
+            DeleteState(ReadyFile);
+            DeleteState(RollbackFile);
+            return null;
+        }
+        if (IsInstalled(previous)) WriteState(RollbackFile, previous);
+        WriteState(CurrentFile, staged);
+        DeleteState(ReadyFile);
+        return previous;
+    }
+
+    internal static bool Rollback(string previous)
+    {
+        if (!IsInstalled(previous)) return false;
+        WriteState(CurrentFile, previous);
+        DeleteState(RollbackFile);
+        return true;
+    }
+
+    internal static void MarkSuccessful(string previous, Action<string> log)
+    {
+        DeleteState(RollbackFile);
+        Cleanup(previous, log);
+    }
+
+    internal static void Cancel()
+    {
+        cancelling = true;
+        Process process;
+        lock (processLock) process = packageProcess;
+        if (process != null)
+            try { KillTree(process.Id); } catch { }
+    }
+
+    private static void RunExclusive(
+        Func<string> work,
+        SynchronizationContext ui,
+        Action completed,
+        Action<string> failed)
+    {
+        if (Interlocked.CompareExchange(ref working, 1, 0) != 0) return;
         ThreadPool.QueueUserWorkItem(delegate
         {
-            try { RunBackgroundCheck(log, onUpdateReady, ui); }
-            catch { }
-            finally { Interlocked.Exchange(ref checking, 0); }
+            string error = null;
+            try { error = work(); }
+            catch (Exception ex) { error = ex.Message; }
+            finally { Interlocked.Exchange(ref working, 0); }
+            if (error != null) Post(ui, delegate { failed(error); });
+            else if (completed != null) Post(ui, delegate { completed(); });
         });
     }
 
-    internal static string PrefetchLatestBlocking(Action<string> log)
+    private static string QueryLatest(Action<string> log)
     {
-        return PrefetchLatest(log);
-    }
-
-    internal static string ReadPendingVersion()
-    {
-        try
-        {
-            if (!File.Exists(UpdatePendingFlag)) return null;
-            return ExtractVersion(File.ReadAllText(UpdatePendingFlag));
-        }
-        catch { return null; }
-    }
-
-    internal static void MarkRunningVersion(string version)
-    {
-        if (string.IsNullOrWhiteSpace(version)) return;
-        try
-        {
-            File.WriteAllText(VersionState, version.Trim(), new UTF8Encoding(false));
-            if (File.Exists(UpdatePendingFlag)) File.Delete(UpdatePendingFlag);
-        }
-        catch { }
-    }
-
-    private static void RunBackgroundCheck(
-        Action<string> log,
-        Action<string> onUpdateReady,
-        SynchronizationContext ui)
-    {
-        string registryVersion = QueryRegistryVersion(log);
-        if (registryVersion == null) return;
-
-        string knownVersion = ReadKnownVersion();
-        if (knownVersion != null &&
-            string.Equals(knownVersion, registryVersion, StringComparison.OrdinalIgnoreCase)) return;
-        if (knownVersion == null)
-        {
-            log("DSH update check deferred: running version is not known yet");
-            return;
-        }
-
-        log("DSH update available: " + knownVersion + " -> " + registryVersion);
-        try { File.WriteAllText(UpdatePendingFlag, registryVersion, new UTF8Encoding(false)); } catch { }
-        Post(ui, delegate { onUpdateReady(registryVersion); });
-    }
-
-    private static string QueryRegistryVersion(Action<string> log)
-    {
-        string output = RunNpmCommand("npm.cmd view " + PackageName + " version", 30000);
-        if (output == null)
-        {
-            log("DSH update check skipped: npm view failed");
-            return null;
-        }
-        return ExtractVersion(output);
-    }
-
-    private static string PrefetchLatest(Action<string> log)
-    {
-        string output = RunNpmCommand("npx.cmd --yes " + PackageName + "@latest --version", 300000);
-        if (output == null)
-        {
-            log("DSH update prefetch failed");
-            return null;
-        }
-        string version = ExtractVersion(output);
-        if (version == null) log("DSH update prefetch returned no version");
+        try { Directory.CreateDirectory(Cache); } catch { }
+        string output = Run(
+            "npm.cmd view --cache " + Quote(Cache) + " " + PackageName + "@latest version",
+            RegistryTimeoutMs);
+        string version = ParseVersion(output);
+        if (version == null) log("npm latest-version check failed");
         return version;
     }
 
-    private static string ReadKnownVersion()
+    private static bool Install(string version, Action<string> log)
     {
+        if (IsInstalled(version)) return true;
+        if (!IsVersion(version) || cancelling) return false;
+        string directory = VersionDirectory(version);
         try
         {
-            if (!File.Exists(VersionState)) return null;
-            return ExtractVersion(File.ReadAllText(VersionState));
+            if (Directory.Exists(directory)) Directory.Delete(directory, true);
+            Directory.CreateDirectory(directory);
+            Directory.CreateDirectory(Cache);
         }
-        catch { return null; }
+        catch { return false; }
+
+        string command = "npm.cmd install --no-save --package-lock=false --prefix " +
+            Quote(directory) + " --cache " + Quote(Cache) + " " + PackageName + "@" + version;
+        if (Run(command, InstallTimeoutMs) == null || !IsInstalled(version))
+        {
+            try { Directory.Delete(directory, true); } catch { }
+            return false;
+        }
+        log("DSH " + version + " prepared in an isolated version directory");
+        return true;
     }
 
-    private static string ExtractVersion(string text)
-    {
-        if (string.IsNullOrWhiteSpace(text)) return null;
-        Match match = VersionPattern.Match(text.Trim());
-        return match.Success ? match.Groups[1].Value : null;
-    }
-
-    private static string RunNpmCommand(string command, int timeoutMs)
+    private static string Run(string command, int timeoutMs)
     {
         Process process = null;
         try
         {
+            AppendPackageLog(Environment.NewLine + "[" + DateTime.Now.ToString("s") + "] " + command);
             var info = new ProcessStartInfo
             {
                 FileName = Environment.GetEnvironmentVariable("ComSpec") ?? "cmd.exe",
@@ -767,43 +818,128 @@ internal static class DshPackageUpdater
                 RedirectStandardError = false,
                 StandardOutputEncoding = Encoding.UTF8
             };
-            process = Process.Start(info);
-            if (process == null) return null;
-
+            process = new Process { StartInfo = info };
             var output = new StringBuilder();
             process.OutputDataReceived += delegate(object sender, DataReceivedEventArgs e)
             {
-                if (e.Data != null) output.AppendLine(e.Data);
+                if (e.Data == null) return;
+                output.AppendLine(e.Data);
+                AppendPackageLog(e.Data);
             };
+            process.Start();
+            lock (processLock) packageProcess = process;
             process.BeginOutputReadLine();
-            if (!process.WaitForExit(timeoutMs))
+            if (!process.WaitForExit(timeoutMs) || cancelling)
             {
-                try { process.Kill(); } catch { }
+                KillTree(process.Id);
                 return null;
             }
             process.WaitForExit();
-            if (process.ExitCode != 0) return null;
-            string combined = output.ToString().Trim();
-            return string.IsNullOrEmpty(combined) ? null : combined;
+            AppendPackageLog("exit code " + process.ExitCode);
+            return process.ExitCode == 0 ? output.ToString().Trim() : null;
         }
-        catch
-        {
-            return null;
-        }
+        catch { return null; }
         finally
         {
+            lock (processLock)
+                if (ReferenceEquals(packageProcess, process)) packageProcess = null;
             if (process != null) process.Dispose();
         }
     }
 
+    private static void AppendPackageLog(string line)
+    {
+        try
+        {
+            lock (logLock)
+                File.AppendAllText(PackageLog, line + Environment.NewLine, new UTF8Encoding(false));
+        }
+        catch { }
+    }
+
+    private static bool IsInstalled(string version)
+    {
+        return IsVersion(version) && File.Exists(CommandFor(version));
+    }
+    private static bool IsVersion(string version)
+    {
+        return !string.IsNullOrWhiteSpace(version) && VersionPattern.IsMatch(version);
+    }
+    private static string VersionDirectory(string version)
+    {
+        return Path.Combine(Versions, version);
+    }
+    private static string CommandFor(string version)
+    {
+        return Path.Combine(VersionDirectory(version), "node_modules", ".bin", "dsh.cmd");
+    }
+    private static string ParseVersion(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return null;
+        string[] lines = text.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
+        for (int i = lines.Length - 1; i >= 0; i--)
+        {
+            Match match = VersionPattern.Match(lines[i]);
+            if (match.Success) return match.Groups[1].Value;
+        }
+        return null;
+    }
+    private static string ReadState(string path)
+    {
+        try { return File.Exists(path) ? ParseVersion(File.ReadAllText(path)) : null; }
+        catch { return null; }
+    }
+    private static void WriteState(string path, string version)
+    {
+        if (!IsVersion(version)) throw new InvalidDataException("Invalid DSH version.");
+        Directory.CreateDirectory(Path.GetDirectoryName(path));
+        string temporary = path + ".tmp";
+        File.WriteAllText(temporary, version, new UTF8Encoding(false));
+        if (File.Exists(path)) File.Replace(temporary, path, null);
+        else File.Move(temporary, path);
+    }
+    private static void DeleteState(string path)
+    {
+        try { if (File.Exists(path)) File.Delete(path); } catch { }
+    }
+    private static void Cleanup(string previous, Action<string> log)
+    {
+        string current = CurrentVersion;
+        try
+        {
+            if (!Directory.Exists(Versions)) return;
+            foreach (string directory in Directory.GetDirectories(Versions))
+            {
+                string version = Path.GetFileName(directory);
+                if (string.Equals(version, current, StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(version, previous, StringComparison.OrdinalIgnoreCase))
+                    continue;
+                try { Directory.Delete(directory, true); }
+                catch { log("could not remove old DSH " + version); }
+            }
+        }
+        catch { }
+    }
+    private static string Quote(string value)
+    {
+        return "\"" + value.Replace("\"", "\"\"") + "\"";
+    }
+    private static void KillTree(int processId)
+    {
+        Process killer = Process.Start(new ProcessStartInfo
+        {
+            FileName = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "taskkill.exe"),
+            Arguments = "/PID " + processId + " /T /F",
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            WindowStyle = ProcessWindowStyle.Hidden
+        });
+        if (killer != null) { killer.WaitForExit(5000); killer.Dispose(); }
+    }
     private static void Post(SynchronizationContext ui, SendOrPostCallback callback)
     {
-        if (ui != null)
-        {
-            try { ui.Post(callback, null); return; }
-            catch { }
-        }
-        callback(null);
+        try { ui.Post(callback, null); }
+        catch { }
     }
 }
 
@@ -812,7 +948,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private const int DefaultPort = 3080;
     private const int ProbeIntervalMs = 1000;
 
-    // A cold "npx --yes" install of DSH can take several minutes before the server binds.
+    // The first managed installation can take several minutes before the server binds.
     private const int ProbeTimeoutMs = 600000;
 
     private static readonly string DefaultUrl = "http://127.0.0.1:" + DefaultPort + "/";
@@ -845,11 +981,13 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private string url;
     private int generation;
     private bool exiting;
-    private bool startedWithLatest;
+    private string rollbackVersion;
+    private bool rollbackInProgress;
 
     internal TrayApplicationContext()
     {
         ui = SynchronizationContext.Current ?? new WindowsFormsSynchronizationContext();
+        rollbackVersion = DshPackageManager.PendingRollbackVersion;
         DeleteUrlState();
 
         menu = new ModernContextMenuStrip
@@ -893,7 +1031,12 @@ internal sealed class TrayApplicationContext : ApplicationContext
             // browser and immediately dismisses the context menu before it can be used.
             if (e.Button == MouseButtons.Left) OpenDsh();
         };
-        StartDsh(restart: false);
+        if (string.IsNullOrEmpty(rollbackVersion))
+        {
+            try { rollbackVersion = DshPackageManager.PromoteReady(); }
+            catch { }
+        }
+        StartDsh();
     }
 
     private static ToolStripMenuItem CreateMenuItem(string text, Font font, EventHandler handler)
@@ -934,9 +1077,11 @@ internal sealed class TrayApplicationContext : ApplicationContext
         if (oldRegion != null) oldRegion.Dispose();
     }
 
-    private void StartDsh(bool restart)
+    private void StartDsh()
     {
         if (dsh != null && !dsh.HasExited) return;
+        string dshCommand = DshPackageManager.CurrentCommand;
+        bool managed = !string.IsNullOrEmpty(dshCommand);
         url = null;
         openItem.Enabled = false;
         StopProbe();
@@ -945,8 +1090,6 @@ internal sealed class TrayApplicationContext : ApplicationContext
         File.WriteAllText(stdoutLog, "", new UTF8Encoding(false));
         File.WriteAllText(stderrLog, "", new UTF8Encoding(false));
         int thisGeneration = ++generation;
-        string packageSpec = DshPackageUpdater.PackageSpecForStart(restart);
-        startedWithLatest = packageSpec.IndexOf("@latest", StringComparison.OrdinalIgnoreCase) >= 0;
 
         if (!EnsurePortIsFree())
         {
@@ -959,7 +1102,9 @@ internal sealed class TrayApplicationContext : ApplicationContext
             var info = new ProcessStartInfo
             {
                 FileName = Environment.GetEnvironmentVariable("ComSpec") ?? "cmd.exe",
-                Arguments = "/d /s /c \"npx.cmd --yes " + packageSpec + " web --no-open\"",
+                Arguments = managed
+                    ? "/d /s /c \"\"" + dshCommand + "\" web --no-open\""
+                    : "/d /s /c \"npx.cmd --yes @deepseek-ai/dsh web --no-open\"",
                 UseShellExecute = false,
                 CreateNoWindow = true,
                 WindowStyle = ProcessWindowStyle.Hidden,
@@ -987,7 +1132,9 @@ internal sealed class TrayApplicationContext : ApplicationContext
                 AppendTrayNote("job object unavailable; falling back to taskkill for shutdown");
             process.BeginOutputReadLine();
             process.BeginErrorReadLine();
-            AppendTrayNote("starting " + packageSpec + " web --no-open");
+            AppendTrayNote(managed
+                ? "starting managed DSH " + DshPackageManager.CurrentVersion
+                : "starting the cached npx DSH while npm latest is prepared in the background");
             SetTrayText(Program.ProductName + " - Starting...");
             StartProbe();
         }
@@ -995,9 +1142,10 @@ internal sealed class TrayApplicationContext : ApplicationContext
         {
             dsh = null;
             DisposeJob();
+            if (TryRollbackAndRestart("start failed")) return;
             SetTrayText(Program.ProductName + " - Start failed");
             MessageBox.Show(
-                "DSH could not be started. Make sure Node.js/npm is installed and npx is available.\r\n\r\n" + ex.Message,
+                "DSH could not be started. Make sure Node.js is installed.\r\n\r\n" + ex.Message,
                 Program.ProductName, MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
     }
@@ -1067,7 +1215,12 @@ internal sealed class TrayApplicationContext : ApplicationContext
                 AdoptUrl(DefaultUrl, sourceGeneration);
                 return;
             }
-            if (probeElapsedMs >= ProbeTimeoutMs) StopProbe();
+            if (probeElapsedMs >= ProbeTimeoutMs)
+            {
+                StopProbe();
+                if (sourceGeneration == generation)
+                    TryRollbackAndRestart("new latest release did not become ready before timeout");
+            }
         };
         probeTimer.Start();
     }
@@ -1121,8 +1274,14 @@ internal sealed class TrayApplicationContext : ApplicationContext
         StopProbe();
         openItem.Enabled = true;
         RefreshRunningTrayText();
-        TryCaptureRunningVersion();
-        ScheduleBackgroundUpdateCheck();
+        if (!string.IsNullOrEmpty(rollbackVersion))
+        {
+            string previous = rollbackVersion;
+            rollbackVersion = null;
+            rollbackInProgress = false;
+            DshPackageManager.MarkSuccessful(previous, AppendTrayNote);
+        }
+        StageLatest();
         OpenDsh();
     }
 
@@ -1132,37 +1291,35 @@ internal sealed class TrayApplicationContext : ApplicationContext
         SetTrayText(Program.ProductName + " - Running");
     }
 
-    private void ScheduleBackgroundUpdateCheck()
+    private void StageLatest()
     {
-        DshPackageUpdater.ScheduleBackgroundCheck(
+        DshPackageManager.StageLatestAsync(
             ui,
             AppendTrayNote,
             delegate(string version)
             {
                 if (exiting) return;
+                restartItem.Enabled = false;
+                SetTrayText(Program.ProductName + " - Updating");
+            },
+            delegate(string version)
+            {
+                if (exiting) return;
+                restartItem.Enabled = true;
+                RefreshRunningTrayText();
                 tray.BalloonTipTitle = Program.ProductName + " update ready";
                 tray.BalloonTipText = "DSH " + version +
-                    " is available. Choose Restart DSH to download and switch to the latest version.";
+                    " is installed. Restart DSH or exit and reopen to switch.";
                 tray.BalloonTipIcon = ToolTipIcon.Info;
                 tray.ShowBalloonTip(8000);
+            },
+            delegate(string error)
+            {
+                if (exiting) return;
+                restartItem.Enabled = true;
+                RefreshRunningTrayText();
+                AppendTrayNote("background update failed: " + error);
             });
-    }
-
-    private void TryCaptureRunningVersion()
-    {
-        string version = ExtractDshVersion(ReadLog(stdoutLog));
-        if (version == null) version = ExtractDshVersion(ReadLog(stderrLog));
-        if (version == null && startedWithLatest)
-            version = DshPackageUpdater.ReadPendingVersion();
-        DshPackageUpdater.MarkRunningVersion(version);
-        startedWithLatest = false;
-    }
-
-    private static string ExtractDshVersion(string log)
-    {
-        if (string.IsNullOrEmpty(log)) return null;
-        Match match = Regex.Match(log, @"dsh(?:\s+web)?\s+v?(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)", RegexOptions.IgnoreCase);
-        return match.Success ? match.Groups[1].Value : null;
     }
 
     private void SetTrayText(string tooltip)
@@ -1183,6 +1340,8 @@ internal sealed class TrayApplicationContext : ApplicationContext
         openItem.Enabled = false;
         StopProbe();
         DeleteUrlState();
+        if (!exiting && TryRollbackAndRestart("new version exited with code " + exitCode))
+            return;
         SetTrayText(Program.ProductName + " - Stopped");
         if (!exiting)
         {
@@ -1244,14 +1403,36 @@ internal sealed class TrayApplicationContext : ApplicationContext
         try
         {
             StopDsh();
-            if (DshPackageUpdater.IsUpdatePending())
-            {
-                SetTrayText(Program.ProductName + " - Updating");
-                DshPackageUpdater.PrefetchLatestBlocking(AppendTrayNote);
-            }
-            StartDsh(restart: true);
+            string previous = DshPackageManager.PromoteReady();
+            if (!string.IsNullOrEmpty(previous))
+                rollbackVersion = previous;
+            StartDsh();
         }
         finally { restartItem.Enabled = true; }
+    }
+
+    private bool TryRollbackAndRestart(string reason)
+    {
+        if (string.IsNullOrEmpty(rollbackVersion) || rollbackInProgress || exiting)
+            return false;
+        string previous = rollbackVersion;
+        rollbackInProgress = true;
+        AppendTrayNote(reason + "; rolling back to " + previous);
+        StopDsh();
+        if (!DshPackageManager.Rollback(previous))
+        {
+            rollbackVersion = null;
+            rollbackInProgress = false;
+            return false;
+        }
+        rollbackVersion = null;
+        rollbackInProgress = false;
+        tray.BalloonTipTitle = Program.ProductName + " update rolled back";
+        tray.BalloonTipText = "The new latest release did not start. Restoring " + previous + ".";
+        tray.BalloonTipIcon = ToolTipIcon.Warning;
+        tray.ShowBalloonTip(8000);
+        StartDsh();
+        return true;
     }
 
     private void StopDsh()
@@ -1306,6 +1487,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
     {
         if (exiting) return;
         exiting = true;
+        DshPackageManager.Cancel();
         StopDsh();
         tray.Visible = false;
         ExitThread();
@@ -1321,7 +1503,12 @@ internal sealed class TrayApplicationContext : ApplicationContext
     {
         if (disposing)
         {
-            if (!exiting) { exiting = true; StopDsh(); }
+            if (!exiting)
+            {
+                exiting = true;
+                DshPackageManager.Cancel();
+                StopDsh();
+            }
             StopProbe();
             DisposeJob();
             tray.Visible = false;
