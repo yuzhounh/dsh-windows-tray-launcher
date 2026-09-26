@@ -5,6 +5,10 @@
 <h1 align="center">DSH Windows Tray Launcher</h1>
 
 <p align="center">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/Code_License-MIT-D4A017.svg" alt="Code License: MIT"></a>
+</p>
+
+<p align="center">
   <strong>English</strong> | <a href="README.zh-CN.md">中文</a>
 </p>
 
@@ -109,12 +113,16 @@ Double-click `Uninstall.cmd` in the downloaded repository folder. It offers to c
 Open DSH is enabled only once DSH reports a working address, so a greyed-out entry means DSH never finished starting. Check `dsh-web-error.log`. If it ends with `EADDRINUSE ... 127.0.0.1:3080`, an earlier DSH server is still holding the port; choose **Restart DSH**, which now reclaims it automatically.
 
 **DSH is still reachable in the browser after Exit.**
-That indicates a leftover server from a launcher build older than 1.3.0. Identify and stop it once with:
+This can indicate a leftover server, including one from a launcher build older than 1.3.0. First inspect the process listening on that port:
 
 ```powershell
 Get-NetTCPConnection -LocalPort 3080 -State Listen |
-  ForEach-Object { Stop-Process -Id $_.OwningProcess -Force }
+  Select-Object -ExpandProperty OwningProcess -Unique |
+  ForEach-Object { Get-CimInstance Win32_Process -Filter "ProcessId = $_" } |
+  Select-Object ProcessId, Name, CommandLine
 ```
+
+After confirming that the process is the leftover DSH server, close that instance or stop its specific process ID. Keep other services on that port running.
 
 **The first start takes several minutes.**
 If no managed copy exists yet, the launcher starts the available npx copy first. After DSH is ready, npm's current `latest` release is prepared in the background; its output is written to `dsh-package-install.log`.
@@ -133,6 +141,11 @@ If no managed copy exists yet, the launcher starts the available npx copy first.
 The whale outline is derived from the official DeepSeek Harness [`website/public/favicon.svg`](https://github.com/deepseek-ai/deepseek-harness/blob/master/website/public/favicon.svg) and recolored black. See [NOTICE.md](NOTICE.md).
 
 DeepSeek, DeepSeek Harness, and their logos may be trademarks of their respective owners. Their use here identifies compatibility and does not imply endorsement.
+
+## Related projects
+
+- [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) - The upstream application launched and updated by this tray tool.
+- [dsh-quota-panel-sidebar](https://github.com/yuzhounh/dsh-quota-panel-sidebar) - A separately installed quota and balance widget for the DSH Web UI. The tray launcher manages the local DSH process; the sidebar project adds information inside its web interface.
 
 ## License
 
