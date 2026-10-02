@@ -1,15 +1,20 @@
 <p align="center">
-  <img src="dsh-favicon-black.svg" alt="DSH whale icon" width="80">
+  <img src="dsh-favicon-black.svg" width="112" alt="DSH Windows Tray Launcher logo">
 </p>
 
 <h1 align="center">DSH Windows Tray Launcher</h1>
 
+<p align="center"><strong>Launch, update, and manage DeepSeek Harness from the Windows system tray.</strong></p>
+
 <p align="center">
-  <a href="LICENSE"><img src="https://img.shields.io/badge/Code_License-MIT-D4A017.svg" alt="Code License: MIT"></a>
+  <a href="https://github.com/yuzhounh/dsh-windows-tray-launcher/releases/latest"><img src="https://img.shields.io/github/v/release/yuzhounh/dsh-windows-tray-launcher?style=flat&amp;color=0969da&amp;label=Release" alt="Latest stable release"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-f59e0b?style=flat" alt="License: MIT"></a>
+  <img src="https://img.shields.io/badge/Platform-Windows-0078d4?style=flat" alt="Platform: Windows">
+  <img src="https://img.shields.io/badge/C%23-.NET-512bd4?style=flat&amp;logo=dotnet&amp;logoColor=white" alt="C#: .NET">
 </p>
 
 <p align="center">
-  <strong>English</strong> | <a href="README.zh-CN.md">中文</a>
+  <a href="README.zh-CN.md">中文说明</a> · <a href="https://github.com/yuzhounh/dsh-windows-tray-launcher/releases/latest">Latest release</a> · <a href="#install">Get started</a> · <a href="LICENSE">License</a>
 </p>
 
 An unofficial Windows system tray launcher for [DeepSeek Harness (`dsh`)](https://github.com/deepseek-ai/deepseek-harness).
